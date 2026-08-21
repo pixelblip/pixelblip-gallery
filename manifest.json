@@ -1,7 +1,16 @@
 {
   "v": 1,
-  "updated": 1787313187118,
+  "updated": 1787313211742,
   "works": [
+    {
+      "id": "paint_2026-08-21_125324_fin",
+      "title": "paint_2026-08-21_125324_fin",
+      "created": 1787313204577,
+      "image": "works/paint_2026-08-21_125324_fin.png",
+      "fin": "works/paint_2026-08-21_125324_fin.paint.json",
+      "trashed": false,
+      "trashedAt": null
+    },
     {
       "id": "paint_2026-08-21_125254_fin",
       "title": "paint_2026-08-21_125254_fin",
