@@ -253,6 +253,12 @@ const GITHUB_OWNER = 'pixelblip';
 const GITHUB_REPO = 'pixelblip-gallery';
 const TOKEN_KEY = 'pixelblip-gallery-token-v1';
 const MANIFEST_URL = './manifest.json';
+const RAW_BASE = 'https://raw.githubusercontent.com/pixelblip/pixelblip-gallery/main/';
+
+function assetUrl(rel) {
+  const p = String(rel || '').replace(/^\.\//, '');
+  return RAW_BASE + p + '?t=' + (manifest.updated || Date.now());
+}
 
 const LW = 160, LH = 256;
 const PXW = 4, PXH = 2;
@@ -408,7 +414,7 @@ function showFinalImage(url) {
     sctx.fillRect(0, 0, DISP_W, DISP_H);
     sctx.drawImage(im, 0, 0, DISP_W, DISP_H);
   };
-  im.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  im.src = assetUrl(url);
 }
 
 async function playDoc(doc) {
@@ -460,7 +466,7 @@ function cardEl(work, inTrash) {
   const el = document.createElement('article');
   el.className = 'card';
   el.innerHTML =
-    '<img alt="" loading="lazy" src="' + work.image + '?t=' + (manifest.updated || 0) + '">' +
+    '<img alt="" loading="lazy" src="' + assetUrl(work.image) + '">' +
     '<div class="meta"><strong>' + (work.title || work.id) + '</strong>' +
     fmtDate(work.created) + (inTrash ? ' · trash' : '') + '</div>';
   el.onclick = () => openWork(work, inTrash);
@@ -500,18 +506,27 @@ function closeModal() {
 
 async function loadManifest() {
   setStatus('Loading gallery…');
-  try {
-    const res = await fetch(MANIFEST_URL + '?t=' + Date.now(), { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    manifest = await res.json();
-    if (!manifest.works) manifest.works = [];
-    render();
-    setStatus(liveWorks().length + ' pieces · Pixelblip Gallery', 'ok');
-  } catch (err) {
-    manifest = { v: 1, updated: 0, works: [] };
-    render();
-    setStatus('Could not load manifest (publish the repo + enable Pages). ' + (err.message || err), 'err');
+  const urls = [
+    RAW_BASE + 'manifest.json?t=' + Date.now(),
+    MANIFEST_URL + '?t=' + Date.now()
+  ];
+  let lastErr = null;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      manifest = await res.json();
+      if (!manifest.works) manifest.works = [];
+      render();
+      setStatus(liveWorks().length + ' pieces · Pixelblip Gallery', 'ok');
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
   }
+  manifest = { v: 1, updated: 0, works: [] };
+  render();
+  setStatus('Could not load manifest. ' + (lastErr && lastErr.message ? lastErr.message : lastErr), 'err');
 }
 
 function b64utf8(str) {
@@ -681,7 +696,7 @@ document.getElementById('btn-play').onclick = async () => {
   if (!active || !active.fin) return;
   setStatus('Loading play sequence…');
   try {
-    const res = await fetch(active.fin + '?t=' + Date.now(), { cache: 'no-store' });
+    const res = await fetch(assetUrl(active.fin), { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const doc = await res.json();
     setStatus('Playing…');
