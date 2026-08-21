@@ -197,6 +197,29 @@
     gap: 8px;
     margin-top: 12px;
   }
+  .transport {
+    margin-top: 12px;
+    display: grid;
+    gap: 10px;
+  }
+  .transport label {
+    display: grid;
+    grid-template-columns: 72px 1fr 56px;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .transport input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .transport .val {
+    text-align: right;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
 
   @keyframes rise {
     from { opacity: 0; transform: translateY(10px); }
@@ -235,6 +258,18 @@
   <div class="modal-box">
     <h2 id="modal-title">Piece</h2>
     <div class="stage-wrap"><canvas id="stage" width="640" height="512"></canvas></div>
+    <div class="transport">
+      <label>
+        <span>Speed</span>
+        <input type="range" id="speed" min="0.25" max="8" step="0.25" value="1">
+        <span class="val" id="speed-val">1×</span>
+      </label>
+      <label>
+        <span>Position</span>
+        <input type="range" id="pos" min="0" max="0" step="1" value="0">
+        <span class="val" id="pos-val">0 / 0</span>
+      </label>
+    </div>
     <div class="modal-actions">
       <button type="button" id="btn-play">Play painting</button>
       <button type="button" id="btn-show">Show final</button>
@@ -298,6 +333,16 @@ let ownerMode = false;
 let showTrash = false;
 let active = null;
 let playing = false;
+let playDocCache = null;
+let timeline = [];
+let playIndex = 0; // how many steps have been applied (0 = blank)
+let scrubbing = false;
+
+const speedEl = document.getElementById('speed');
+const speedVal = document.getElementById('speed-val');
+const posEl = document.getElementById('pos');
+const posVal = document.getElementById('pos-val');
+const btnPlay = document.getElementById('btn-play');
 
 const statusEl = document.getElementById('status');
 const grid = document.getElementById('grid');
@@ -405,8 +450,67 @@ function waitMs(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function syncPlayButton() {
+  btnPlay.textContent = playing ? 'Pause' : (playIndex > 0 && playIndex < timeline.length ? 'Resume' : 'Play painting');
+}
+
+function syncPosUi() {
+  const max = timeline.length;
+  posEl.max = String(Math.max(0, max));
+  if (!scrubbing) posEl.value = String(playIndex);
+  posVal.textContent = playIndex + ' / ' + max;
+}
+
+function syncSpeedUi() {
+  const v = Number(speedEl.value) || 1;
+  speedVal.textContent = (Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')) + '×';
+}
+
+function buildTimeline(doc) {
+  const steps = [];
+  const actions = (doc && doc.actions) || [];
+  for (let ai = 0; ai < actions.length; ai++) {
+    const a = actions[ai];
+    if (a.t === 'cls') {
+      steps.push({ kind: 'cls' });
+      continue;
+    }
+    if (a.t === 'fill') continue;
+    if (a.t === 'stroke' && a.pts && a.pts.length >= 2) {
+      const snap = Object.assign({ col: 1, pcol: 0, pat: 17, palRow: 1, dT: 1, dw: 1 }, a);
+      let px = a.pts[0], py = a.pts[1];
+      steps.push({ kind: 'dot', snap, x: px, y: py });
+      for (let i = 2; i < a.pts.length; i += 2) {
+        const x = a.pts[i], y = a.pts[i + 1];
+        steps.push({ kind: 'seg', snap, x0: px, y0: py, x1: x, y1: y });
+        px = x; py = y;
+      }
+    }
+  }
+  return steps;
+}
+
+function applyStep(step) {
+  if (!step) return;
+  if (step.kind === 'cls') paint.fill(0);
+  else if (step.kind === 'dot') plotAt(step.x, step.y, step.snap);
+  else if (step.kind === 'seg') strokeLine(step.x0, step.y0, step.x1, step.y1, step.snap);
+}
+
+/** Rebuild canvas from blank through stepCount steps (for rewind / scrub). */
+function paintToIndex(stepCount) {
+  const n = Math.max(0, Math.min(timeline.length, stepCount | 0));
+  paint.fill(0);
+  for (let i = 0; i < n; i++) applyStep(timeline[i]);
+  playIndex = n;
+  blit();
+  syncPosUi();
+  syncPlayButton();
+}
+
 function showFinalImage(url) {
   playing = false;
+  syncPlayButton();
   const im = new Image();
   im.onload = () => {
     sctx.imageSmoothingEnabled = false;
@@ -417,33 +521,56 @@ function showFinalImage(url) {
   im.src = assetUrl(url);
 }
 
-async function playDoc(doc) {
-  if (!doc || !Array.isArray(doc.actions) || playing) return;
+async function ensureTimeline() {
+  if (!active || !active.fin) throw new Error('No play sequence');
+  if (playDocCache && playDocCache._workId === active.id && timeline.length) return;
+  const res = await fetch(assetUrl(active.fin), { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const doc = await res.json();
+  doc._workId = active.id;
+  playDocCache = doc;
+  timeline = buildTimeline(doc);
+  playIndex = 0;
+  syncPosUi();
+  syncPlayButton();
+}
+
+async function runPlayback() {
+  if (playing) return;
+  if (!timeline.length) return;
+  if (playIndex >= timeline.length) playIndex = 0;
   playing = true;
-  paint.fill(0);
-  blit();
-  for (let ai = 0; ai < doc.actions.length; ai++) {
-    if (!playing) break;
-    const a = doc.actions[ai];
-    const snap = Object.assign({ col: 1, pcol: 0, pat: 17, palRow: 1, dT: 1, dw: 1 }, a);
-    if (a.t === 'cls') { paint.fill(0); blit(); await waitMs(80); continue; }
-    if (a.t === 'fill') continue; // fill omitted in lightweight gallery player
-    if (a.t === 'stroke' && a.pts && a.pts.length >= 2) {
-      let px = a.pts[0], py = a.pts[1];
-      plotAt(px, py, snap);
-      for (let i = 2; i < a.pts.length; i += 2) {
-        if (!playing) break;
-        const x = a.pts[i], y = a.pts[i + 1];
-        strokeLine(px, py, x, y, snap);
-        px = x; py = y;
-        if (((i >> 1) & 3) === 0) { blit(); await waitMs(5); }
-      }
-      blit();
-      await waitMs(16);
-    }
+  syncPlayButton();
+  setStatus('Playing…');
+
+  // If starting mid-way after scrub, canvas already matches playIndex
+  while (playing && playIndex < timeline.length) {
+    applyStep(timeline[playIndex]);
+    playIndex++;
+    if ((playIndex & 3) === 0 || playIndex >= timeline.length) blit();
+    syncPosUi();
+    const speed = Math.max(0.25, Number(speedEl.value) || 1);
+    const delay = Math.max(0, 6 / speed);
+    if (delay > 0) await waitMs(delay);
+    else if ((playIndex & 31) === 0) await waitMs(0); // yield occasionally at max speed
   }
+
+  if (playing) {
+    blit();
+    playing = false;
+    syncPlayButton();
+    setStatus('Play done', 'ok');
+    if (active && playIndex >= timeline.length) showFinalImage(active.image);
+  } else {
+    blit();
+    syncPlayButton();
+    setStatus('Paused · step ' + playIndex + ' / ' + timeline.length);
+  }
+}
+
+function stopPlayback() {
   playing = false;
-  if (active) showFinalImage(active.image);
+  syncPlayButton();
 }
 
 function fmtDate(t) {
@@ -490,17 +617,34 @@ function render() {
 }
 
 function openWork(work, inTrash) {
+  stopPlayback();
   active = work;
+  playDocCache = null;
+  timeline = [];
+  playIndex = 0;
+  syncPosUi();
+  syncSpeedUi();
+  syncPlayButton();
   document.getElementById('modal-title').textContent = work.title || work.id;
   document.getElementById('btn-trash').hidden = !ownerMode || inTrash;
   document.getElementById('btn-restore').hidden = !ownerMode || !inTrash;
   modal.classList.add('show');
   showFinalImage(work.image);
+  // Prefetch play data so sliders are ready
+  ensureTimeline().then(() => {
+    syncPosUi();
+    setStatus('Ready · ' + timeline.length + ' stroke steps', 'ok');
+  }).catch(() => {
+    setStatus('No play sequence for this piece', 'err');
+  });
 }
 
 function closeModal() {
-  playing = false;
+  stopPlayback();
   active = null;
+  playDocCache = null;
+  timeline = [];
+  playIndex = 0;
   modal.classList.remove('show');
 }
 
@@ -689,25 +833,58 @@ document.getElementById('btn-trash-view').onclick = () => {
 };
 document.getElementById('btn-empty').onclick = () => emptyTrash();
 document.getElementById('btn-close').onclick = () => closeModal();
-document.getElementById('btn-show').onclick = () => { if (active) showFinalImage(active.image); };
+document.getElementById('btn-show').onclick = () => {
+  stopPlayback();
+  if (active) {
+    playIndex = timeline.length;
+    syncPosUi();
+    showFinalImage(active.image);
+  }
+};
 document.getElementById('btn-trash').onclick = () => softTrashActive();
 document.getElementById('btn-restore').onclick = () => restoreActive();
-document.getElementById('btn-play').onclick = async () => {
+
+speedEl.addEventListener('input', syncSpeedUi);
+
+posEl.addEventListener('pointerdown', () => { scrubbing = true; stopPlayback(); });
+posEl.addEventListener('pointerup', () => { scrubbing = false; });
+posEl.addEventListener('change', () => { scrubbing = false; });
+posEl.addEventListener('input', () => {
+  const n = Number(posEl.value) || 0;
+  paintToIndex(n);
+  setStatus('Step ' + playIndex + ' / ' + timeline.length);
+});
+
+btnPlay.onclick = async () => {
   if (!active || !active.fin) return;
-  setStatus('Loading play sequence…');
+  if (playing) {
+    stopPlayback();
+    setStatus('Paused · step ' + playIndex + ' / ' + timeline.length);
+    return;
+  }
   try {
-    const res = await fetch(assetUrl(active.fin), { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const doc = await res.json();
-    setStatus('Playing…');
-    await playDoc(doc);
-    setStatus('Play done', 'ok');
+    setStatus('Loading play sequence…');
+    await ensureTimeline();
+    if (!timeline.length) {
+      setStatus('No strokes to play', 'err');
+      return;
+    }
+    if (playIndex >= timeline.length) {
+      paintToIndex(0);
+    } else if (playIndex === 0) {
+      paint.fill(0);
+      blit();
+    }
+    await runPlayback();
   } catch (err) {
+    stopPlayback();
     setStatus('Play failed: ' + (err.message || err), 'err');
   }
 };
 modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
 
+syncSpeedUi();
+syncPosUi();
 if (getToken()) ownerMode = true;
 loadManifest();
 })();
