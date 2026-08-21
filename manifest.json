@@ -1,5 +1,15 @@
 {
   "v": 1,
-  "updated": 0,
-  "works": []
+  "updated": 1787309475093,
+  "works": [
+    {
+      "id": "publish_probe",
+      "title": "publish_probe",
+      "created": 1,
+      "image": "works/publish_probe.png",
+      "fin": "works/publish_probe.paint.json",
+      "trashed": false,
+      "trashedAt": null
+    }
+  ]
 }
