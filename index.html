@@ -379,7 +379,7 @@ function hexRgb(c) {
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
 }
 function bbcInk(c) { return c & 7; }
-function patIdx(x, y) { return ((y & 3) << 2) | (x & 3); }
+function patIdx(x, y) { return (x & 3) + (((15 - y) & 3) << 2); }
 
 function blackDitherActive(t) {
   return t.palRow === 0 && t.pat > 0 && t.pat < 17;
@@ -390,8 +390,8 @@ function plotColAt(x, y, t) {
   if (t.pat === 17) return bbcInk(t.col);
   if (t.pat === 0) return t.dT ? null : bbcInk(t.pcol || 0);
   if (blackDitherActive(t)) return bit ? 0 : (t.dT ? null : 0);
-  if (t.dT && !bit) return null;
-  return bit ? bbcInk(t.col) : (t.dT ? null : 0);
+  if (t.dT && t.pat > 0 && t.pat < 17 && !bit) return null;
+  return bbcInk(bit ? t.col : (t.pcol || 0));
 }
 
 function canPlot(dc, t) {
@@ -429,6 +429,51 @@ function strokeLine(x1, y1, x2, y2, t) {
     const e2 = 2 * err;
     if (e2 > -dy) { err -= dy; x1 += sx; }
     if (e2 < dx) { err += dx; y1 += sy; }
+  }
+}
+
+function floodFill(sx, sy, t) {
+  if (sx < 0 || sx >= LW || sy < 0 || sy >= LH) return;
+  const target = paint[sy * LW + sx];
+  if (!blackDitherActive(t)) {
+    const dc = plotColAt(sx, sy, t);
+    if (target === (dc === null ? (t.pcol || 0) : dc)) return;
+  } else if (target === 0 && !PATTERNS[t.pat][patIdx(sx, sy)]) {
+    return;
+  }
+  const stack = [[sx, sy]];
+  const seen = new Uint8Array(LW * LH);
+  while (stack.length) {
+    const [x, y] = stack.pop();
+    if (x < 0 || x >= LW || y < 0 || y >= LH) continue;
+    let xl = x;
+    while (xl > 0 && paint[y * LW + xl - 1] === target) xl--;
+    let xr = x;
+    while (xr < LW - 1 && paint[y * LW + xr + 1] === target) xr++;
+    for (let p = xl; p <= xr; p++) {
+      const i = y * LW + p;
+      if (seen[i] || paint[i] !== target) continue;
+      seen[i] = 1;
+      setPxDraw(p, y, t);
+      if (y > 0 && !seen[i - LW] && paint[i - LW] === target) stack.push([p, y - 1]);
+      if (y < LH - 1 && !seen[i + LW] && paint[i + LW] === target) stack.push([p, y + 1]);
+    }
+  }
+}
+
+/** Decode the paint app's run-length snapshot ("<colour><count base36>." per run). */
+function decodePaintInto(s, dst) {
+  dst.fill(0);
+  let i = 0, k = 0;
+  const str = String(s || '');
+  while (k < str.length && i < dst.length) {
+    const v = (str.charCodeAt(k) - 48) & 7;
+    const dot = str.indexOf('.', k + 1);
+    if (dot < 0) break;
+    const n = parseInt(str.slice(k + 1, dot), 36) || 0;
+    dst.fill(v, i, Math.min(dst.length, i + n));
+    i += n;
+    k = dot + 1;
   }
 }
 
@@ -475,7 +520,15 @@ function buildTimeline(doc) {
       steps.push({ kind: 'cls' });
       continue;
     }
-    if (a.t === 'fill') continue;
+    if (a.t === 'snap') {
+      steps.push({ kind: 'snap', d: a.d });
+      continue;
+    }
+    if (a.t === 'fill') {
+      const snap = Object.assign({ col: 1, pcol: 0, pat: 17, palRow: 1, dT: 1, dw: 1 }, a);
+      steps.push({ kind: 'fill', snap, x: a.x | 0, y: a.y | 0 });
+      continue;
+    }
     if (a.t === 'stroke' && a.pts && a.pts.length >= 2) {
       const snap = Object.assign({ col: 1, pcol: 0, pat: 17, palRow: 1, dT: 1, dw: 1 }, a);
       let px = a.pts[0], py = a.pts[1];
@@ -493,6 +546,8 @@ function buildTimeline(doc) {
 function applyStep(step) {
   if (!step) return;
   if (step.kind === 'cls') paint.fill(0);
+  else if (step.kind === 'snap') decodePaintInto(step.d, paint);
+  else if (step.kind === 'fill') floodFill(step.x, step.y, step.snap);
   else if (step.kind === 'dot') plotAt(step.x, step.y, step.snap);
   else if (step.kind === 'seg') strokeLine(step.x0, step.y0, step.x1, step.y1, step.snap);
 }
