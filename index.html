@@ -386,6 +386,7 @@ function blackDitherActive(t) {
 }
 
 function plotColAt(x, y, t) {
+  if (t.er) return 0;
   const bit = PATTERNS[t.pat][patIdx(x, y)];
   if (t.pat === 17) return bbcInk(t.col);
   if (t.pat === 0) return t.dT ? null : bbcInk(t.pcol || 0);
@@ -396,6 +397,7 @@ function plotColAt(x, y, t) {
 
 function canPlot(dc, t) {
   if (dc === null || dc === undefined) return false;
+  if (t.er) return true;
   if (!t.dT) return true;
   if (dc === 0 && (t.col === 0 || t.palRow === 0)) return true;
   return dc !== 0;
@@ -435,7 +437,9 @@ function strokeLine(x1, y1, x2, y2, t) {
 function floodFill(sx, sy, t) {
   if (sx < 0 || sx >= LW || sy < 0 || sy >= LH) return;
   const target = paint[sy * LW + sx];
-  if (!blackDitherActive(t)) {
+  if (t.er) {
+    if (target === 0) return;
+  } else if (!blackDitherActive(t)) {
     const dc = plotColAt(sx, sy, t);
     if (target === (dc === null ? (t.pcol || 0) : dc)) return;
   } else if (target === 0 && !PATTERNS[t.pat][patIdx(sx, sy)]) {
